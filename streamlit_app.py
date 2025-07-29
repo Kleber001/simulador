@@ -70,7 +70,7 @@ def expand_grouped(df: pd.DataFrame):
 
 # ────────────── Streamlit UI ──────────────
 st.set_page_config("Simulador de Cubagem",layout="wide")
-st.title("📦 Simulador de Cubagem — algoritmo Skyline")
+st.title("📦 Simulador de Cubagem - Delta 📦")
 
 C=st.sidebar.number_input("Comprimento (m)",0.1,50.0,13.6,0.1)
 L=st.sidebar.number_input("Largura (m)",0.1,5.0,2.45,0.05)
