@@ -144,7 +144,7 @@ def add_box(ax, x, y, z, dx, dy, dz, color):
 
 # ────────────────────────── Interface Streamlit ──────────────────────────
 st.set_page_config(page_title="Simulador de Cubagem", layout="wide")
-st.title("Simulador de Cubagem — Skyline + SKUs agrupados")
+st.title("Delta - Simulador de Cubagem")
 
 # Sidebar de configurações
 with st.sidebar:
