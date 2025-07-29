@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
-# ────────────────────────── CLASSES PRINCIPAIS ──────────────────────────
+# ================================= CLASSES PRINCIPAIS =================================
 class Box:
     def __init__(self, sku: str, c: float, l: float, a: float):
         self.id = sku
@@ -41,16 +41,11 @@ class SkylineLayer:
                     return True, (x, y)
         return False, None
 
-# ────────────────────────── FUNÇÕES DE PROCESSAMENTO ──────────────────────────
+# ================================= PROCESSAMENTO DE DADOS =================================
 def safe_sku_split(sku: str) -> List[str]:
-    """Divide o SKU de forma segura com tratamento de erros"""
-    try:
-        return sku.split('-')
-    except:
-        return []
+    return sku.split('-') if isinstance(sku, str) else []
 
 def create_key(row, is_med: bool = False) -> Optional[str]:
-    """Cria chave de lookup com tratamento de erros"""
     try:
         if is_med:
             parts = [
@@ -59,27 +54,24 @@ def create_key(row, is_med: bool = False) -> Optional[str]:
             ]
         else:
             sku_parts = safe_sku_split(row.get("COD SKU", ""))
-            p1 = sku_parts[0] if len(sku_parts) > 0 else "ND"
-            p3 = sku_parts[2] if len(sku_parts) >= 3 else "ND"
-            parts = [p1, p3]
+            parts = [
+                sku_parts[0] if len(sku_parts) > 0 else "ND",
+                sku_parts[2] if len(sku_parts) >= 3 else "ND"
+            ]
             
         qmm = int(row.get("QMM", 0))
         return f"{parts[0]}-{parts[1]}-{qmm}"
-    except Exception as e:
-        st.error(f"Erro ao criar chave: {str(e)}")
+    except Exception:
         return None
 
 def load_files(car_file, med_file):
-    """Carrega e processa os arquivos com tratamento de erros"""
     try:
         car = pd.read_excel(car_file, engine="openpyxl")
         med = pd.read_excel(med_file, engine="openpyxl")
 
-        # Criar chaves com validação
         med["KEY"] = med.apply(lambda r: create_key(r, is_med=True), axis=1)
         car["KEY"] = car.apply(create_key, axis=1)
 
-        # Filtrar dados válidos
         valid_car = car.dropna(subset=["KEY"])
         valid_med = med.dropna(subset=["KEY"])
 
@@ -98,7 +90,6 @@ def load_files(car_file, med_file):
         return pd.DataFrame(), pd.DataFrame()
 
 def expand_grouped(df: pd.DataFrame) -> List[List[Box]]:
-    """Expande os grupos de SKUs com tratamento robusto"""
     groups: Dict[str, List[Box]] = {}
     order: List[str] = []
     
@@ -106,7 +97,7 @@ def expand_grouped(df: pd.DataFrame) -> List[List[Box]]:
         try:
             sku = r.get("COD SKU", "DESCONHECIDO")
             sku_parts = safe_sku_split(sku)
-            base_sku = "-".join(sku_parts[:3]) if len(sku_parts) >=3 else sku
+            base_sku = "-".join(sku_parts[:3]) if sku_parts else sku
             
             qmm = r.get("QMM", 0)
             if pd.isna(qmm) or qmm <= 0:
@@ -123,21 +114,16 @@ def expand_grouped(df: pd.DataFrame) -> List[List[Box]]:
                 order.append(sku)
                 
             groups[sku].extend(
-                Box(
-                    f"{base_sku}-{i}",
-                    r["COMPRIMENTO"],
-                    r["LARGURA"],
-                    r["ALTURA"]
-                ) for i in range(1, n + 1)
+                Box(f"{base_sku}-{i}", r["COMPRIMENTO"], r["LARGURA"], r["ALTURA"])
+                for i in range(1, n + 1)
             )
             
         except Exception as e:
-            st.error(f"Erro ao processar linha {_}: {str(e)}")
-            continue
+            st.error(f"Erro ao processar linha: {str(e)}")
             
-    return [groups[k] for k in order if k in groups and groups[k]]
+    return [groups[k] for k in order if k in groups]
 
-# ────────────────────────── ALGORITMO DE EMPACOTAMENTO ──────────────────────────
+# ================================= ALGORITMO DE EMPACOTAMENTO =================================
 def pack_grouped(trailer: Trailer, sku_groups: List[List[Box]]):
     placed: List[Box] = []
     unplaced: List[Box] = []
@@ -176,15 +162,13 @@ def pack_grouped(trailer: Trailer, sku_groups: List[List[Box]]):
                             return placed, unplaced
                         layer = SkylineLayer(trailer.c, trailer.l)
                         layer_h = 0.0
-        
     except Exception as e:
-        st.error(f"Erro durante o empacotamento: {str(e)}")
+        st.error(f"Erro durante empacotamento: {str(e)}")
     
     return placed, unplaced
 
-# ────────────────────────── VISUALIZAÇÃO 3D ──────────────────────────
+# ================================= VISUALIZAÇÃO 3D =================================
 def create_cube_edges(x, y, z, dx, dy, dz):
-    """Gera os vertices para visualização 3D"""
     return [
         ((x, y, z), (x+dx, y, z)),
         ((x+dx, y, z), (x+dx, y+dy, z)),
@@ -201,7 +185,6 @@ def create_cube_edges(x, y, z, dx, dy, dz):
     ]
 
 def add_box_to_plot(ax, box, color):
-    """Adiciona uma caixa ao plot 3D"""
     try:
         x, y, z = box.pos
         faces = [
@@ -218,111 +201,108 @@ def add_box_to_plot(ax, box, color):
     except Exception as e:
         st.error(f"Erro ao renderizar caixa: {str(e)}")
 
-# ────────────────────────── INTERFACE STREAMLIT ──────────────────────────
+# ================================= INTERFACE STREAMLIT =================================
 def setup_interface():
     st.set_page_config(
-        page_title="Otimização de Cargas 3D",
+        page_title="Otimizador de Cargas 3D",
         layout="wide",
-        page_icon="🚚"
+        page_icon="🚛"
     )
-    st.title("Otimizador Inteligente de Carga de Veículos")
-
+    st.title("Otimização Inteligente de Carga Veicular")
+    
     with st.sidebar:
-        st.header("Configurações do Veículo")
+        st.header("Configuração do Veículo")
         col1, col2, col3 = st.columns(3)
-        with col1:
-            c = st.number_input("Comprimento (m)", min_value=1.0, value=13.6)
-        with col2:
-            l = st.number_input("Largura (m)", min_value=1.0, value=2.45)
-        with col3:
-            a = st.number_input("Altura (m)", min_value=1.0, value=2.9)
-
+        with col1: c = st.number_input("Comprimento (m)", 1.0, 20.0, 13.6)
+        with col2: l = st.number_input("Largura (m)", 1.0, 5.0, 2.45)
+        with col3: a = st.number_input("Altura (m)", 1.0, 5.0, 2.9)
+        
         st.header("Upload de Arquivos")
-        car_file = st.file_uploader("Carregamento (.xlsx)", type="xlsx")
-        med_file = st.file_uploader("Medidas (.xlsx)", type="xlsx")
-        return c, l, a, car_file, med_file
+        car_file = st.file_uploader("Arquivo de Carregamento (.xlsx)", type="xlsx")
+        med_file = st.file_uploader("Arquivo de Medidas (.xlsx)", type="xlsx")
+        
+    return c, l, a, car_file, med_file
 
-def display_results(trailer, placed, left, sku_groups):
+def display_results(trailer: Trailer, placed: List[Box], left: List[Box], sku_groups: List[List[Box]], missing: pd.DataFrame):
     col1, col2 = st.columns([3, 1])
     
+    # Visualização 3D
     with col1:
-        st.subheader("Visualização 3D da Carga")
+        st.subheader("Visualização Tridimensional da Carga")
         fig = plt.figure(figsize=(10, 6))
         ax = fig.add_subplot(111, projection='3d')
         
         ax.set_xlim(0, trailer.c)
         ax.set_ylim(0, trailer.l)
         ax.set_zlim(0, trailer.a)
-        ax.set_xlabel("Comprimento (m)")
-        ax.set_ylabel("Largura (m)")
-        ax.set_zlabel("Altura (m)")
+        ax.set_xlabel("Comprimento (m)", labelpad=10)
+        ax.set_ylabel("Largura (m)", labelpad=10)
+        ax.set_zlabel("Altura (m)", labelpad=10)
         ax.view_init(elev=25, azim=-60)
-        ax.grid(False)
         
         # Contorno do trailer
         ax.add_collection3d(
             Line3DCollection(
                 create_cube_edges(0, 0, 0, trailer.c, trailer.l, trailer.a),
-                colors="gray",
+                colors="#404040",
                 linewidths=0.8
             )
         )
         
-        # Cores para os SKUs
+        # Plotagem das caixas
         if placed:
-            unique_skus = list({"-".join(b.id.split("-")[:-1]) for b in placed})
+            unique_skus = {b.id.rsplit("-", 1)[0] for b in placed}
             cmap = plt.get_cmap("tab20")
             colors = {sku: cmap(i % 20) for i, sku in enumerate(unique_skus)}
             
             for b in placed:
-                sku = "-".join(b.id.split("-")[:-1])
-                add_box_to_plot(ax, b, colors[sku])
-        
+                sku_base = b.id.rsplit("-", 1)[0]
+                add_box_to_plot(ax, b, colors[sku_base])
+                
         st.pyplot(fig)
 
+    # Painel de Métricas
     with col2:
         st.subheader("Indicadores de Performance")
         vol_used = sum(b.volume for b in placed)
-        utilization = (vol_used / trailer.volume * 100) if trailer.volume > 0 else 0
+        utilizacao = vol_used / trailer.volume * 100 if trailer.volume > 0 else 0
         
-        st.metric("🌐 Taxa de Ocupação", f"{utilization:.1f}%")
-        st.metric("✅ Caixas Posicionadas", len(placed))
-        st.metric("❌ Caixas Não Alocadas", len(left))
+        st.metric("**Taxa de Ocupação**", f"{utilizacao:.1f}%")
+        st.metric("Caixas Posicionadas", len(placed), help="Número total de unidades alocadas")
+        st.metric("Caixas Não Alocadas", len(left), help="Unidades que não couberam no espaço disponível")
         
-        # Capacidade residual
-        if sku_groups and (trailer.volume - vol_used) > 0:
-            last_group = [g for g in sku_groups if g][-1]
-            if last_group:
+        # Capacidade Residual
+        if sku_groups and (remaining_vol := trailer.volume - vol_used) > 0:
+            if last_group := [g for g in sku_groups if g][-1]:
                 sample = last_group[0]
-                box_vol = sample.volume
-                remaining = trailer.volume - vol_used
-                additional = int(remaining // box_vol) if box_vol > 0 else 0
-                
-                if additional > 0:
+                adicional = int(remaining_vol // sample.volume)
+                if adicional > 0:
                     st.divider()
                     st.markdown(f"""
-                    **📦 Capacidade Residual**
-                    - {additional} unid. do último SKU
-                    - Dimensões: {sample.c}m × {sample.l}m × {sample.a}m
-                    - Volume resto: {remaining:.2f}m³
+                    **📦 Espaço Residual**
+                    - **{adicional} unidades** adicionais
+                    - **SKU:** {sample.id.rsplit("-", 1)[0]}  
+                    - **Dimensões:** {sample.c}m × {sample.l}m × {sample.a}m
                     """)
 
+        # Dados Não Processados
         with st.expander("⚠ SKUs Não Mapeados", expanded=False):
             if not missing.empty:
                 st.dataframe(
-                    missing[['COD SKU', 'QMM']],
-                    use_container_width=True,
+                    missing[["COD SKU", "QTDE"]],
                     column_config={
                         "COD SKU": "SKU",
-                        "QMM": "Qtd. por Medida"
-                    }
+                        "QTDE": "Quantidade"
+                    },
+                    use_container_width=True,
+                    height=200
                 )
             else:
-                st.success("Todos os SKUs foram mapeados")
+                st.success("Todas as SKUs foram mapeadas com sucesso")
 
 def main():
     c, l, a, car_file, med_file = setup_interface()
-
+    
     if car_file and med_file:
         try:
             merged, missing = load_files(car_file, med_file)
@@ -331,18 +311,15 @@ def main():
                 sku_groups = expand_grouped(merged)
                 trailer = Trailer(c, l, a)
                 placed, left = pack_grouped(trailer, sku_groups)
-                display_results(trailer, placed, left, sku_groups)
+                display_results(trailer, placed, left, sku_groups, missing)
             else:
-                st.warning("Nenhum dado válido encontrado para processamento")
+                st.warning("Nenhum dado válido encontrado nos arquivos enviados")
                 
         except Exception as e:
-            st.error(f"Falha crítica no processamento: {str(e)}")
-            st.stop()
-
+            st.error(f"Erro no processamento: {str(e)}")
     else:
-        st.info("📤 Faça upload dos arquivos para iniciar a otimização")
+        st.info("🔽 Faça upload dos arquivos nas configurações ao lado para iniciar")
 
 if __name__ == "__main__":
     main()
-
 
