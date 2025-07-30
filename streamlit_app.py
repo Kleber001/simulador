@@ -48,26 +48,46 @@ def safe_sku_split(sku: str) -> List[str]:
 def create_key(row, is_med: bool = False) -> Optional[str]:
     try:
         if is_med:
-            parts = [
-                str(row.get("COD FAMILIA", "")),
-                str(row.get("COD TAMANHO", ""))
-            ]
+            # Acesso direto às colunas com verificação
+            familia = str(row["COD FAMILIA"]) if pd.notna(row["COD FAMILIA"]) else "ND"
+            tamanho = str(row["COD TAMANHO"]) if pd.notna(row["COD TAMANHO"]) else "ND"
+            qmm = int(row["QMM"])
+            return f"{familia}-{tamanho}-{qmm}"
         else:
-            sku_parts = safe_sku_split(row.get("COD SKU", ""))
+            # Tratamento robusto para SKUs
+            sku = str(row["COD SKU"]) if pd.notna(row["COD SKU"]) else "ND-ND-ND"
+            sku_parts = safe_sku_split(sku)
             parts = [
                 sku_parts[0] if len(sku_parts) > 0 else "ND",
                 sku_parts[2] if len(sku_parts) >= 3 else "ND"
             ]
-            
-        qmm = int(row.get("QMM", 0))
-        return f"{parts[0]}-{parts[1]}-{qmm}"
-    except Exception:
+            qmm = int(row["QMM"]) if pd.notna(row["QMM"]) else 0
+            return f"{parts[0]}-{parts[1]}-{qmm}"
+    
+    except KeyError as e:
+        st.error(f"Coluna faltante: {str(e)}")
         return None
+    except Exception as e:
+        st.error(f"Erro ao criar chave: {str(e)}")
+        return None
+
+def validate_columns(df: pd.DataFrame, required: List[str]) -> bool:
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        st.error(f"Colunas obrigatórias faltantes: {', '.join(missing)}")
+        return False
+    return True
 
 def load_files(car_file, med_file):
     try:
         car = pd.read_excel(car_file, engine="openpyxl")
         med = pd.read_excel(med_file, engine="openpyxl")
+
+        # Validação das colunas
+        if not validate_columns(car, ["COD SKU", "QMM", "QTDE"]):
+            return pd.DataFrame(), pd.DataFrame()
+        if not validate_columns(med, ["COD FAMILIA", "COD TAMANHO", "ALTURA", "LARGURA", "COMPRIMENTO"]):
+            return pd.DataFrame(), pd.DataFrame()
 
         med["KEY"] = med.apply(lambda r: create_key(r, is_med=True), axis=1)
         car["KEY"] = car.apply(create_key, axis=1)
@@ -95,15 +115,15 @@ def expand_grouped(df: pd.DataFrame) -> List[List[Box]]:
     
     for _, r in df.iterrows():
         try:
-            sku = r.get("COD SKU", "DESCONHECIDO")
+            sku = r["COD SKU"] if pd.notna(r["COD SKU"]) else "DESCONHECIDO"
             sku_parts = safe_sku_split(sku)
             base_sku = "-".join(sku_parts[:3]) if sku_parts else sku
             
-            qmm = r.get("QMM", 0)
+            qmm = r["QMM"]
             if pd.isna(qmm) or qmm <= 0:
                 continue
                 
-            qtde = r.get("QTDE", 0)
+            qtde = r["QTDE"]
             if qtde <= 0:
                 continue
                 
@@ -204,30 +224,29 @@ def add_box_to_plot(ax, box, color):
 # ================================= INTERFACE STREAMLIT =================================
 def setup_interface():
     st.set_page_config(
-        page_title="Otimizador de Cargas 3D",
+        page_title="Otimizador de Cargas 3D v2",
         layout="wide",
-        page_icon="🚚"
+        page_icon="📦"
     )
-    st.title("Otimização Inteligente de Carga Veicular")
+    st.title("Sistema Inteligente de Otimização de Carga")
     
     with st.sidebar:
-        st.header("Configuração do Veículo")
-        col1, col2, col3 = st.columns(3)
-        with col1: 
-            c = st.number_input("Comprimento (m)", 1.0, 20.0, 13.6, step=0.1)
-        with col2: 
-            l = st.number_input("Largura (m)", 1.0, 5.0, 2.45, step=0.1)
-        with col3: 
-            a = st.number_input("Altura (m)", 1.0, 5.0, 2.9, step=0.1)
+        st.header("Parâmetros do Veículo")
+        cols = st.columns(3)
+        with cols[0]: c = st.number_input("Comprimento (m)", 1.0, 20.0, 13.6)
+        with cols[1]: l = st.number_input("Largura (m)", 1.0, 5.0, 2.45)
+        with cols[2]: a = st.number_input("Altura (m)", 1.0, 5.0, 2.9)
         
-        st.header("Upload de Arquivos")
-        car_file = st.file_uploader("Arquivo de Carregamento (.xlsx)", type="xlsx")
-        med_file = st.file_uploader("Arquivo de Medidas (.xlsx)", type="xlsx")
-        
-    return c, l, a, car_file, med_file
+        st.divider()
+        st.header("Upload de Dados")
+        with st.form(key="upload_form"):
+            car_file = st.file_uploader("Dados de Carregamento", type="xlsx")
+            med_file = st.file_uploader("Tabela de Medidas", type="xlsx")
+            submitted = st.form_submit_button("Processar Dados")
+    
+    return c, l, a, car_file, med_file, submitted
 
 def create_3d_view(trailer, boxes, ax, elev, azim, title):
-    """Cria uma visualização 3D com configurações específicas"""
     ax.clear()
     ax.set_xlim(0, trailer.c)
     ax.set_ylim(0, trailer.l)
@@ -235,123 +254,93 @@ def create_3d_view(trailer, boxes, ax, elev, azim, title):
     ax.set_title(title, pad=15)
     ax.view_init(elev=elev, azim=azim)
     
+    # Grade de referência
+    ax.grid(True, alpha=0.3)
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
+    
     # Contorno do trailer
     ax.add_collection3d(Line3DCollection(
         create_cube_edges(0, 0, 0, trailer.c, trailer.l, trailer.a),
         colors="#404040", 
-        linewidths=0.8
+        linewidths=1.2
     ))
     
-    # Plotar caixas
+    # Plotagem das caixas
     if boxes:
-        unique_skus = {b.id.rsplit("-", 1)[0] for b in boxes}
-        cmap = plt.get_cmap("tab20")
-        colors = {sku: cmap(i % 20) for i, sku in enumerate(unique_skus)}
+        unique_skus = {b.id.split('-')[0] for b in boxes}
+        cmap = plt.get_cmap("gist_ncar")
+        colors = {sku: cmap(i/len(unique_skus)) for i, sku in enumerate(unique_skus)}
         
         for b in boxes:
-            sku_base = b.id.rsplit("-", 1)[0]
+            sku_base = b.id.split('-')[0]
             add_box_to_plot(ax, b, colors[sku_base])
 
-def display_results(trailer: Trailer, placed: List[Box], left: List[Box], sku_groups: List[List[Box]], missing: pd.DataFrame):
-    # Seção de Métricas
-    st.subheader("📊 Análise de Eficiência")
-    cols = st.columns(4)
-    with cols[0]:
-        vol_used = sum(b.volume for b in placed)
-        utilizacao = vol_used / trailer.volume * 100
-        st.metric("Ocupação Total", f"{utilizacao:.1f}%")
-
-    with cols[1]:
-        st.metric("Unidades Alocadas", len(placed), "caixas")
-
-    with cols[2]:
-        st.metric("Resíduo Espacial", f"{trailer.volume - vol_used:.1f} m³")
-
-    with cols[3]:
-        st.metric("Não Alocados", len(left), "unidades" if len(left) > 0 else "-")
-
-    # Visualizações Multiplos Ângulos
-    st.subheader("🔍 Inspeção Tridimensional")
+def display_results(trailer: Trailer, placed: List[Box], left: List[Box], missing: pd.DataFrame):
+    st.header("Resultados da Simulação")
     
-    fig = plt.figure(figsize=(16, 12))
-    views = [
-        (211, (25, -60), "Vista 3D Padrão"), 
-        (212, (90, -90), "Vista Superior")
-    ]
-    
-    for i, (subplot, (elev, azim), title) in enumerate(views, 1):
-        ax = fig.add_subplot(subplot, projection='3d')
-        create_3d_view(trailer, placed, ax, elev, azim, title)
-    
-    st.pyplot(fig)
+    # Painel de métricas
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Taxa de Ocupação", 
+                f"{(sum(b.volume for b in placed)/trailer.volume*100):.1f}%")
+    with col2:
+        st.metric("Caixas Posicionadas", f"{len(placed)} 📦")
+    with col3:
+        st.metric("Espaço Residual", 
+                f"{(trailer.volume - sum(b.volume for b in placed)):.2f} m³")
 
-    st.subheader("🔄 Análise por Perspectivas")
-    tabs = st.tabs(["Frontal", "Lateral", "Isométrica", "Detalhe"])
+    # Abas de visualização
+    tab1, tab2, tab3 = st.tabs(["Perspectiva 3D", "Vista Superior", "Análise Técnica"])
     
-    angles = [
-        (10, -90),  # Frontal
-        (10, 0),    # Lateral
-        (25, -45),  # Isométrica
-        (25, -30)   # Detalhe
-    ]
+    with tab1:
+        fig = plt.figure(figsize=(10, 6))
+        ax = fig.add_subplot(111, projection='3d')
+        create_3d_view(trailer, placed, ax, 25, -60, "Visão 3D da Carga")
+        st.pyplot(fig)
     
-    for tab, (elev, azim) in zip(tabs, angles):
-        with tab:
-            fig = plt.figure(figsize=(8, 5))
-            ax = fig.add_subplot(111, projection='3d')
-            create_3d_view(trailer, placed, ax, elev, azim, f"Vista {tab.get('label')}")
-            st.pyplot(fig)
+    with tab2:
+        fig = plt.figure(figsize=(10, 5))
+        ax = fig.add_subplot(111, projection='3d')
+        create_3d_view(trailer, placed, ax, 90, -90, "Visão Aérea")
+        st.pyplot(fig)
+        st.info("Áreas em branco representam espaços não utilizados")
 
-    # Análise de Densidade
-    with st.expander("📈 Análise de Camadas"):
+    with tab3:
+        st.subheader("Otimização por Camadas")
         if placed:
             layers = {}
-            for box in placed:
-                layer = int(box.pos[2])
+            for b in placed:
+                layer = int(b.pos[2]//1)
                 layers[layer] = layers.get(layer, 0) + 1
             
-            st.write("**Distribuição por Altura:**")
-            st.bar_chart(layers)
-            
-            st.write("**Eficiência por Camada:**")
-            for layer in sorted(layers.keys()):
-                layer_vol = sum(b.volume for b in placed if int(b.pos[2]) == layer)
-                st.write(f"- Camada {layer}m: {layer_vol/trailer.volume*100:.1f}%")
-    
-    # Dados Não Processados
-    with st.expander("📦 Itens Não Mapeados"):
-        if not missing.empty:
-            st.dataframe(
-                missing[["COD SKU", "QTDE", "QMM"]],
-                column_config={
-                    "COD SKU": "SKU",
-                    "QTDE": "Quantidade Total",
-                    "QMM": "Qtd. por Pallet"
-                },
-                height=250
-            )
-        else:
-            st.success("✅ Todos os itens foram devidamente mapeados")
+            cols = st.columns(2)
+            with cols[0]:
+                st.bar_chart(layers, use_container_width=True)
+            with cols[1]:
+                st.write("**Distribuição Vertical:**")
+                for layer in sorted(layers.keys()):
+                    st.write(f"- Camada {layer}m: {layers[layer]} caixas")
 
 def main():
-    c, l, a, car_file, med_file = setup_interface()
+    c, l, a, car_file, med_file, submitted = setup_interface()
     
-    if car_file and med_file:
-        try:
-            merged, missing = load_files(car_file, med_file)
-            
-            if not merged.empty:
-                sku_groups = expand_grouped(merged)
-                trailer = Trailer(c, l, a)
-                placed, left = pack_grouped(trailer, sku_groups)
-                display_results(trailer, placed, left, sku_groups, missing)
-            else:
-                st.warning("🔍 Nenhum dado válido encontrado nos arquivos!")
+    if submitted and car_file and med_file:
+        with st.spinner("Processando dados..."):
+            try:
+                merged, missing = load_files(car_file, med_file)
                 
-        except Exception as e:
-            st.error(f"❌ Erro no processamento: {str(e)}")
-    else:
-        st.info("📤 Faça upload dos arquivos na barra lateral para iniciar a simulação")
+                if not merged.empty:
+                    sku_groups = expand_grouped(merged)
+                    trailer = Trailer(c, l, a)
+                    placed, left = pack_grouped(trailer, sku_groups)
+                    display_results(trailer, placed, left, missing)
+                else:
+                    st.warning("Nenhum dado válido para processar")
+
+            except Exception as e:
+                st.error(f"Erro no processamento: {type(e).__name__} - {str(e)}")
 
 if __name__ == "__main__":
     main()
