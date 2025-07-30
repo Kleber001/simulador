@@ -213,9 +213,12 @@ def setup_interface():
     with st.sidebar:
         st.header("Configuração do Veículo")
         col1, col2, col3 = st.columns(3)
-        with col1: c = st.number_input("Comprimento (m)", 1.0, 20.0, 13.6)
-        with col2: l = st.number_input("Largura (m)", 1.0, 5.0, 2.45)
-        with col3: a = st.number_input("Altura (m)", 1.0, 5.0, 2.9)
+        with col1: 
+            c = st.number_input("Comprimento (m)", 1.0, 20.0, 13.6, step=0.1)
+        with col2: 
+            l = st.number_input("Largura (m)", 1.0, 5.0, 2.45, step=0.1)
+        with col3: 
+            a = st.number_input("Altura (m)", 1.0, 5.0, 2.9, step=0.1)
         
         st.header("Upload de Arquivos")
         car_file = st.file_uploader("Arquivo de Carregamento (.xlsx)", type="xlsx")
@@ -223,76 +226,112 @@ def setup_interface():
         
     return c, l, a, car_file, med_file
 
-def display_results(trailer: Trailer, placed: List[Box], left: List[Box], sku_groups: List[List[Box]], missing: pd.DataFrame):
-    st.subheader("Indicadores de Performance")
-    cols = st.columns(3)
-    
-    with cols[0]:
-        vol_used = sum(b.volume for b in placed)
-        utilizacao = vol_used / trailer.volume * 100 if trailer.volume > 0 else 0
-        st.metric("**Taxa de Ocupação**", f"{utilizacao:.1f}%")
-    
-    with cols[1]:
-        st.metric("Caixas Posicionadas", len(placed))
-    
-    with cols[2]:
-        st.metric("Caixas Não Alocadas", len(left))
-
-    st.subheader("Visualização Tridimensional da Carga")
-    fig = plt.figure(figsize=(12, 6))
-    ax = fig.add_subplot(111, projection='3d')
-    
+def create_3d_view(trailer, boxes, ax, elev, azim, title):
+    """Cria uma visualização 3D com configurações específicas"""
+    ax.clear()
     ax.set_xlim(0, trailer.c)
     ax.set_ylim(0, trailer.l)
     ax.set_zlim(0, trailer.a)
-    ax.set_xlabel("Comprimento (m)", labelpad=10)
-    ax.set_ylabel("Largura (m)", labelpad=10)
-    ax.set_zlabel("Altura (m)", labelpad=10)
-    ax.view_init(elev=25, azim=-60)
+    ax.set_title(title, pad=15)
+    ax.view_init(elev=elev, azim=azim)
     
     # Contorno do trailer
-    ax.add_collection3d(
-        Line3DCollection(
-            create_cube_edges(0, 0, 0, trailer.c, trailer.l, trailer.a),
-            colors="#404040",
-            linewidths=0.8
-        )
-    )
+    ax.add_collection3d(Line3DCollection(
+        create_cube_edges(0, 0, 0, trailer.c, trailer.l, trailer.a),
+        colors="#404040", 
+        linewidths=0.8
+    ))
     
-    # Plotagem das caixas
-    if placed:
-        unique_skus = {b.id.rsplit("-", 1)[0] for b in placed}
+    # Plotar caixas
+    if boxes:
+        unique_skus = {b.id.rsplit("-", 1)[0] for b in boxes}
         cmap = plt.get_cmap("tab20")
         colors = {sku: cmap(i % 20) for i, sku in enumerate(unique_skus)}
         
-        for b in placed:
+        for b in boxes:
             sku_base = b.id.rsplit("-", 1)[0]
             add_box_to_plot(ax, b, colors[sku_base])
 
+def display_results(trailer: Trailer, placed: List[Box], left: List[Box], sku_groups: List[List[Box]], missing: pd.DataFrame):
+    # Seção de Métricas
+    st.subheader("📊 Análise de Eficiência")
+    cols = st.columns(4)
+    with cols[0]:
+        vol_used = sum(b.volume for b in placed)
+        utilizacao = vol_used / trailer.volume * 100
+        st.metric("Ocupação Total", f"{utilizacao:.1f}%")
+
+    with cols[1]:
+        st.metric("Unidades Alocadas", len(placed), "caixas")
+
+    with cols[2]:
+        st.metric("Resíduo Espacial", f"{trailer.volume - vol_used:.1f} m³")
+
+    with cols[3]:
+        st.metric("Não Alocados", len(left), "unidades" if len(left) > 0 else "-")
+
+    # Visualizações Multiplos Ângulos
+    st.subheader("🔍 Inspeção Tridimensional")
+    
+    fig = plt.figure(figsize=(16, 12))
+    views = [
+        (211, (25, -60), "Vista 3D Padrão"), 
+        (212, (90, -90), "Vista Superior")
+    ]
+    
+    for i, (subplot, (elev, azim), title) in enumerate(views, 1):
+        ax = fig.add_subplot(subplot, projection='3d')
+        create_3d_view(trailer, placed, ax, elev, azim, title)
+    
     st.pyplot(fig)
+
+    st.subheader("🔄 Análise por Perspectivas")
+    tabs = st.tabs(["Frontal", "Lateral", "Isométrica", "Detalhe"])
     
-    if sku_groups and (remaining_vol := trailer.volume - vol_used) > 0:
-        if last_group := [g for g in sku_groups if g][-1]:
-            sample = last_group[0]
-            adicional = int(remaining_vol // sample.volume)
-            if adicional > 0:
-                st.divider()
-                st.markdown(f"""
-                **📦 Espaço Residual**
-                - **{adicional} unidades** adicionais
-                - **SKU:** {sample.id.rsplit("-", 1)[0]}  
-                - **Dimensões:** {sample.c}m × {sample.l}m × {sample.a}m
-                """)
+    angles = [
+        (10, -90),  # Frontal
+        (10, 0),    # Lateral
+        (25, -45),  # Isométrica
+        (25, -30)   # Detalhe
+    ]
     
-    with st.expander("⚠️ SKUs Não Mapeados"):
+    for tab, (elev, azim) in zip(tabs, angles):
+        with tab:
+            fig = plt.figure(figsize=(8, 5))
+            ax = fig.add_subplot(111, projection='3d')
+            create_3d_view(trailer, placed, ax, elev, azim, f"Vista {tab.get('label')}")
+            st.pyplot(fig)
+
+    # Análise de Densidade
+    with st.expander("📈 Análise de Camadas"):
+        if placed:
+            layers = {}
+            for box in placed:
+                layer = int(box.pos[2])
+                layers[layer] = layers.get(layer, 0) + 1
+            
+            st.write("**Distribuição por Altura:**")
+            st.bar_chart(layers)
+            
+            st.write("**Eficiência por Camada:**")
+            for layer in sorted(layers.keys()):
+                layer_vol = sum(b.volume for b in placed if int(b.pos[2]) == layer)
+                st.write(f"- Camada {layer}m: {layer_vol/trailer.volume*100:.1f}%")
+    
+    # Dados Não Processados
+    with st.expander("📦 Itens Não Mapeados"):
         if not missing.empty:
             st.dataframe(
-                missing[["COD SKU", "QTDE"]],
-                column_config={"COD SKU": "SKU", "QTDE": "Quantidade"},
-                use_container_width=True
+                missing[["COD SKU", "QTDE", "QMM"]],
+                column_config={
+                    "COD SKU": "SKU",
+                    "QTDE": "Quantidade Total",
+                    "QMM": "Qtd. por Pallet"
+                },
+                height=250
             )
         else:
-            st.success("Todas as SKUs foram mapeadas com sucesso")
+            st.success("✅ Todos os itens foram devidamente mapeados")
 
 def main():
     c, l, a, car_file, med_file = setup_interface()
@@ -307,12 +346,12 @@ def main():
                 placed, left = pack_grouped(trailer, sku_groups)
                 display_results(trailer, placed, left, sku_groups, missing)
             else:
-                st.warning("Nenhum dado válido encontrado!")
+                st.warning("🔍 Nenhum dado válido encontrado nos arquivos!")
                 
         except Exception as e:
-            st.error(f"Erro no processamento: {str(e)}")
+            st.error(f"❌ Erro no processamento: {str(e)}")
     else:
-        st.info("⏳ Faça upload dos arquivos nas configurações ao lado para iniciar")
+        st.info("📤 Faça upload dos arquivos na barra lateral para iniciar a simulação")
 
 if __name__ == "__main__":
     main()
