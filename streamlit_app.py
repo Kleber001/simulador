@@ -1,317 +1,291 @@
 import math
 import streamlit as st
-from typing import Dict, List, Tuple, Optional
 import pandas as pd
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
+import plotly.graph_objects as go
+from typing import List, Tuple, Optional
+from itertools import cycle
 
-# ========================== CLASSES PRINCIPAIS ==========================
+# ========================== CLASSE OTIMIZADA ==========================
 class Box:
-    def __init__(self, sku: str, c: float, l: float, a: float):
+    __slots__ = ['id', 'dims', 'pos', 'color']
+    def __init__(self, sku: str, dims: tuple):
         self.id = sku
-        self.c = c  # Comprimento
-        self.l = l  # Largura
-        self.a = a  # Altura
+        self.dims = sorted(dims, reverse=True)  # Sempre orienta maior lado primeiro
         self.pos: Optional[Tuple[float, float, float]] = None
-
-    @property
-    def volume(self):
-        return self.c * self.l * self.a
-
-class Trailer:
-    def __init__(self, c: float, l: float, a: float):
-        self.c = c  # Comprimento
-        self.l = l  # Largura
-        self.a = a  # Altura
-    
-    @property
-    def volume(self):
-        return self.c * self.l * self.a
-
-class SkylineLayer:
-    def __init__(self, C: float, L: float):
-        self.C = C  # Comprimento máximo
-        self.L = L  # Largura máxima
-        self.sky = [(0.0, 0.0, C)]  # (x_initial, y_initial, available_length)
-
-# ========================== FUNÇÕES DE PROCESSAMENTO ==========================
-def load_files(car_file, med_file):
-    try:
-        car = pd.read_excel(car_file, engine='openpyxl')
-        med = pd.read_excel(med_file, engine='openpyxl')
-
-        required_car = ["COD SKU", "QMM", "QTDE"]
-        required_med = ["COD FAMILIA", "COD TAMANHO", "ALTURA", "LARGURA", "COMPRIMENTO"]
+        self.color: Optional[str] = None
         
-        for col in required_car:
-            if col not in car.columns:
-                st.error(f"Coluna obrigatória ausente no arquivo de carga: {col}")
-                return pd.DataFrame(), pd.DataFrame()
+    @property
+    def volume(self):
+        return self.dims[0] * self.dims[1] * self.dims[2]
+
+    def rotate(self, axis: int):
+        """Permite rotação em 3 eixos diferentes"""
+        axes = [(0,1,2), (0,2,1), (1,2,0)]
+        new_dims = [self.dims[axes[axis][0]], 
+                   self.dims[axes[axis][1]], 
+                   self.dims[axes[axis][2]]]
+        return new_dims
+
+class Truck:
+    def __init__(self, length: float, width: float, height: float):
+        self.dims = (length, width, height)
+        self.volume = length * width * height
+        self.layers = []
+        
+    def add_layer(self, height: float):
+        self.layers.append({
+            'height': height,
+            'skyline': [(0, 0, self.dims[0])],  # (x, y, available_length)
+            'boxes': []
+        })
+
+# ========================== ALGORITMO FORTEMENTE TIPADO ==========================
+def optimized_packer(truck: Truck, boxes: List[Box], palette_colors: list):
+    current_z = 0.0
+    color_cycle = cycle(palette_colors)
+    remaining_boxes = boxes.copy()
+    
+    while remaining_boxes and current_z < truck.dims[2]:
+        best_fit = None
+        best_orientation = 0
+        best_position = (0, 0, current_z)
+        
+        # Tenta encontrar o melhor encaixe para cada caixa restante
+        for idx, box in enumerate(remaining_boxes):
+            for orientation in range(3):
+                dims = box.rotate(orientation)
+                if dims[2] > (truck.dims[2] - current_z):
+                    continue  # Não cabe na altura restante
                 
-        for col in required_med:
-            if col not in med.columns:
-                st.error(f"Coluna obrigatória ausente no arquivo de medidas: {col}")
-                return pd.DataFrame(), pd.DataFrame()
-
-        med["KEY"] = med.apply(lambda r: f"{r['COD FAMILIA']}-{r['COD TAMANHO']}-{int(r['QMM'])}", axis=1)
-        car["KEY"] = car.apply(lambda r: f"{r['COD SKU'].split('-')[0]}-{r['COD SKU'].split('-')[2]}-{int(r['QMM'])}", axis=1)
-
-        merged = car.merge(
-            med[["KEY", "ALTURA", "LARGURA", "COMPRIMENTO"]],
-            on="KEY",
-            how="left"
-        )
-        missing = merged[merged["ALTURA"].isna()]
-        valid = merged.dropna(subset=["ALTURA"])
+                # Procura no último layer primeiro
+                if truck.layers:
+                    layer = truck.layers[-1]
+                    for seg in layer['skyline']:
+                        x, y, avail = seg
+                        if dims[0] <= avail and dims[1] <= (truck.dims[1] - y):
+                            # Calcula eficiência do posicionamento
+                            space_usage = (dims[0] * dims[1]) / (avail * truck.dims[1])
+                            if not best_fit or space_usage > best_fit[2]:
+                                best_fit = (idx, orientation, (x, y, current_z), space_usage)
+                            break
+                
+                # Se não encontrou, tenta novo layer
+                if not best_fit and dims[2] <= (truck.dims[2] - current_z):
+                    layer_height = dims[2]
+                    best_fit = (idx, orientation, (0, 0, current_z + layer_height), 1.0)
         
-        return valid, missing
-    except Exception as e:
-        st.error(f"Erro na carga de dados: {str(e)}")
-        return pd.DataFrame(), pd.DataFrame()
-
-def expand_grouped(df: pd.DataFrame) -> List[List[Box]]:
-    groups = {}
-    for _, row in df.iterrows():
-        try:
-            sku = row["COD SKU"]
-            qmm = int(row["QMM"])
-            qtde = int(row["QTDE"])
-            num_boxes = math.ceil(qtde / qmm)
+        if best_fit:
+            idx, orient, pos, _ = best_fit
+            selected = remaining_boxes.pop(idx)
+            selected.dims = selected.rotate(orient)
+            selected.pos = pos
+            selected.color = next(color_cycle)
             
-            if sku not in groups:
-                groups[sku] = []
+            if not truck.layers or pos[2] > current_z:
+                truck.add_layer(selected.dims[2])
+                current_z += selected.dims[2]
             
-            groups[sku].extend([
-                Box(f"{sku}-{i+1}", 
-                    row["COMPRIMENTO"], 
-                    row["LARGURA"], 
-                    row["ALTURA"])
-                for i in range(num_boxes)
-            ])
-        except:
-            continue
-    return list(groups.values())
-
-# ========================== ALGORITMO DE EMPACOTAMENTO ==========================
-def pack_grouped(trailer: Trailer, groups: List[List[Box]]):
-    placed = []
-    unplaced = []
-    z = 0.0
-    current_layer = SkylineLayer(trailer.c, trailer.l)
-    current_height = 0.0
-
-    for group in groups:
-        for box in group:
-            placed_flag = False
-            for orientation in [(box.c, box.l), (box.l, box.c)]:
-                for idx, (x, y, available) in enumerate(current_layer.sky):
-                    w, d = orientation
-                    if w <= available and y + d <= current_layer.L:
-                        current_layer.sky[idx] = (x + w, y, available - w)
-                        current_layer.sky.append((x, y + d, w))
-                        box.pos = (x, y, z)
-                        placed.append(box)
-                        current_height = max(current_height, box.a)
-                        placed_flag = True
-                        break
-                if placed_flag:
-                    break
-            if not placed_flag:
-                if z + current_height + box.a > trailer.a:
-                    unplaced.append(box)
-                    unplaced.extend([b for g in groups[groups.index(group)+1:] for b in g])
-                    return placed, unplaced
+            # Atualiza skyline
+            layer = truck.layers[-1]
+            new_segments = []
+            for seg in layer['skyline']:
+                x, y, avail = seg
+                if x == pos[0] and y <= pos[1] < (y + avail):
+                    # Divide o segmento
+                    new_segments.append((x, pos[1] + selected.dims[1], avail - (pos[1] - y)))
                 else:
-                    z += current_height
-                    current_layer = SkylineLayer(trailer.c, trailer.l)
-                    current_height = box.a
-                    current_layer.sky = [(0.0, 0.0, trailer.c)]
-                    box.pos = (0, 0, z)
-                    placed.append(box)
-    return placed, unplaced
-
-# ========================== VISUALIZAÇÃO 3D ==========================
-def create_cube_edges(x, y, z, dx, dy, dz):
-    return [
-        [(x, y, z), (x+dx, y, z)],
-        [(x+dx, y, z), (x+dx, y+dy, z)],
-        [(x+dx, y+dy, z), (x, y+dy, z)],
-        [(x, y+dy, z), (x, y, z)],
-        [(x, y, z), (x, y, z+dz)],
-        [(x+dx, y, z), (x+dx, y, z+dz)],
-        [(x+dx, y+dy, z), (x+dx, y+dy, z+dz)],
-        [(x, y+dy, z), (x, y+dy, z+dz)],
-        [(x, y, z+dz), (x+dx, y, z+dz)],
-        [(x+dx, y, z+dz), (x+dx, y+dy, z+dz)],
-        [(x+dx, y+dy, z+dz), (x, y+dy, z+dz)],
-        [(x, y+dy, z+dz), (x, y, z+dz)],
-    ]
-
-def create_3d_view(trailer: Trailer, boxes: List[Box], elev: float, azim: float):
-    fig = plt.figure(figsize=(12, 7))
-    ax = fig.add_subplot(111, projection='3d')
+                    new_segments.append(seg)
+            layer['skyline'] = new_segments
+            layer['boxes'].append(selected)
+        else:
+            break  # Não cabe mais nada
     
-    # Configurar proporções reais
-    ax.set_box_aspect([trailer.c, trailer.l, trailer.a])
-    ax.set_xlim(0, trailer.c)
-    ax.set_ylim(0, trailer.l)
-    ax.set_zlim(0, trailer.a)
+    return remaining_boxes
+
+# ========================== VISUALIZAÇÃO INTERATIVA ==========================
+def create_interactive_3d(truck: Truck):
+    fig = go.Figure()
     
-    # Adicionar contorno do trailer
-    ax.add_collection3d(Line3DCollection(
-        create_cube_edges(0, 0, 0, trailer.c, trailer.l, trailer.a),
-        colors='#404040',
-        linewidths=1.2
+    # Adiciona o contorno do caminhão
+    fig.add_trace(go.Scatter3d(
+        x=[0, truck.dims[0], truck.dims[0], 0, 0],
+        y=[0, 0, truck.dims[1], truck.dims[1], 0],
+        z=[0, 0, 0, 0, 0],
+        mode='lines',
+        line=dict(color='gray', width=2),
+        name='Base'
     ))
     
-    # Adicionar caixas com cores por SKU
-    color_map = {}
-    for box in boxes:
-        if box.pos:
-            sku_base = box.id.split('-')[0]
-            if sku_base not in color_map:
-                color_map[sku_base] = plt.cm.tab20(len(color_map) % 20)
-            
+    # Adiciona as caixas
+    for layer in truck.layers:
+        for box in layer['boxes']:
             x, y, z = box.pos
-            verts = [
-                [(x, y, z), (x+box.c, y, z), (x+box.c, y+box.l, z), (x, y+box.l, z)],
-                [(x, y, z), (x, y, z+box.a), (x+box.c, y, z+box.a), (x+box.c, y, z)],
-                [(x+box.c, y, z), (x+box.c, y, z+box.a), (x+box.c, y+box.l, z+box.a), (x+box.c, y+box.l, z)],
-                [(x+box.c, y+box.l, z), (x, y+box.l, z), (x, y+box.l, z+box.a), (x+box.c, y+box.l, z+box.a)],
-                [(x, y, z+box.a), (x+box.c, y, z+box.a), (x+box.c, y+box.l, z+box.a), (x, y+box.l, z+box.a)],
-                [(x, y+box.l, z), (x, y+box.l, z+box.a), (x, y, z+box.a), (x, y, z)]
-            ]
-            ax.add_collection3d(Poly3DCollection(
-                verts,
-                facecolors=color_map[sku_base],
-                edgecolors='k',
-                alpha=0.9,
-                linewidths=0.5
+            fig.add_trace(go.Mesh3d(
+                x=[x, x+box.dims[0], x+box.dims[0], x, x, x+box.dims[0], x+box.dims[0], x],
+                y=[y, y, y+box.dims[1], y+box.dims[1], y, y, y+box.dims[1], y+box.dims[1]],
+                z=[z, z, z, z, z+box.dims[2], z+box.dims[2], z+box.dims[2], z+box.dims[2]],
+                i=[7, 0, 0, 0, 4, 4, 6, 6],
+                j=[3, 4, 1, 2, 5, 6, 5, 2],
+                k=[0, 7, 2, 3, 6, 7, 1, 1],
+                color=box.color,
+                opacity=0.8,
+                text=f"SKU: {box.id}<br>Dimensões: {box.dims[0]}x{box.dims[1]}x{box.dims[2]}",
+                hoverinfo='text'
             ))
     
-    ax.view_init(elev=elev, azim=azim)
-    ax.set_title(f"Visualização 3D - Cubagem Total: {trailer.volume:.2f}m³", pad=20)
-    ax.set_xlabel('Comprimento (m)')
-    ax.set_ylabel('Largura (m)')
-    ax.set_zlabel('Altura (m)')
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title='Comprimento (m)', range=[0, truck.dims[0]]),
+            yaxis=dict(title='Largura (m)', range=[0, truck.dims[1]]),
+            zaxis=dict(title='Altura (m)', range=[0, truck.dims[2]]),
+            aspectratio=dict(x=truck.dims[0], y=truck.dims[1], z=truck.dims[2])
+        ),
+        margin=dict(r=20, l=20, b=20, t=40),
+        hovermode='closest'
+    )
     return fig
 
-# ========================== INTERFACE PRINCIPAL ==========================
+# ========================== INTERFACE STREAMLIT ==========================
 def main():
-    st.set_page_config(
-        page_title="Otimizador de Carga 3D Pro",
-        layout="wide",
-        page_icon="🚚"
-    )
+    st.set_page_config(page_title="Otimizador 3D Avançado", layout="wide")
     
-    st.title("Sistema Inteligente de Otimização de Carga")
+    st.title("🚛 Sistema Inteligente de Gestão de Carga")
     
     with st.sidebar:
         st.header("Configurações do Veículo")
-        cols = st.columns(3)
-        with cols[0]: c = st.number_input("Comprimento (m)", 1.0, 20.0, 13.6)
-        with cols[1]: l = st.number_input("Largura (m)", 1.0, 3.0, 2.45)
-        with cols[2]: a = st.number_input("Altura (m)", 1.0, 3.0, 2.9)
-        st.markdown(f"**Cubagem Total:** {c*l*a:.2f}m³")
+        col1, col2, col3 = st.columns(3)
+        length = col1.number_input("Comprimento (m)", 1.0, 20.0, 13.6)
+        width = col2.number_input("Largura (m)", 1.0, 3.0, 2.45)
+        height = col3.number_input("Altura (m)", 1.0, 4.0, 2.9)
         
-        st.header("Upload de Arquivos")
-        car_file = st.file_uploader("Planejamento de Carga (.xlsx)", type="xlsx")
-        med_file = st.file_uploader("Tabela de Medidas (.xlsx)", type="xlsx")
+        st.header("Cores da Paleta")
+        colors = st.multiselect(
+            "Selecione cores para os produtos",
+            options=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD', '#FF9999'],
+            default=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
+        )
+        
+        st.header("Upload de Dados")
+        cargo_file = st.file_uploader("Dados de Carga (Excel)", type="xlsx")
+        measures_file = st.file_uploader("Tabela de Medidas (Excel)", type="xlsx")
     
-    if car_file and med_file:
-        with st.spinner("Analisando dados e calculando melhor disposição..."):
-            try:
-                merged, missing = load_files(car_file, med_file)
-                if merged.empty:
-                    st.warning("Nenhum dado válido encontrado para processamento")
+    if cargo_file and measures_file:
+        try:
+            with st.spinner("Processando dados e otimizando layout..."):
+                # Carregar e validar dados
+                cargo_df = pd.read_excel(cargo_file)
+                measures_df = pd.read_excel(measures_file)
+                
+                required_cols = ['SKU', 'QMM', 'QTDE', 'ALTURA', 'LARGURA', 'COMPRIMENTO']
+                if not all(col in cargo_df.columns for col in required_cols):
+                    st.error("Colunas obrigatórias ausentes nos arquivos!")
                     return
                 
-                trailer = Trailer(c, l, a)
-                groups = expand_grouped(merged)
-                placed, unplaced = pack_grouped(trailer, groups)
+                # Processar caixas
+                boxes = []
+                for _, row in cargo_df.iterrows():
+                    num_boxes = math.ceil(row['QTDE'] / row['QMM'])
+                    for i in range(num_boxes):
+                        boxes.append(Box(
+                            sku=row['SKU'],
+                            dims=(row['COMPRIMENTO'], row['LARGURA'], row['ALTURA'])
+                        ))
                 
-                # Seção de Métricas
-                st.header("Resultados da Simulação")
-                cols = st.columns(5)
-                cols[0].metric("Capacidade Total", f"{trailer.volume:.2f}m³")
-                cols[1].metric("Taxa de Ocupação", f"{sum(b.volume for b in placed)/trailer.volume*100:.1f}%")
-                cols[2].metric("Caixas Alocadas", len(placed), "volumes")
-                cols[3].metric("Espaço Livre", f"{trailer.volume - sum(b.volume for b in placed):.2f}m³")
-                cols[4].metric("Não Alocados", len(unplaced), "volumes", delta_color="inverse")
+                if not boxes:
+                    st.warning("Nenhuma caixa para carregar!")
+                    return
                 
-                # Detalhes dos Não Alocados
-                st.subheader("🔍 Análise Detalhada dos Não Alocados")
-                if unplaced:
-                    unplaced_stats = pd.DataFrame({
-                        "Produto": [b.id.split('-')[0] for b in unplaced],
-                        "Quantidade": [1]*len(unplaced),
-                        "Comprimento (m)": [b.c for b in unplaced],
-                        "Largura (m)": [b.l for b in unplaced],
-                        "Altura (m)": [b.a for b in unplaced]
-                    })
+                # Otimizar layout
+                truck = Truck(length, width, height)
+                unloaded = optimized_packer(truck, boxes, colors)
+                
+                # Resultados
+                st.header(f"Resultados: {len(boxes)-len(unloaded)}/{len(boxes)} Caixas Carregadas")
+                
+                cols = st.columns(4)
+                cols[0].metric("Cubagem Utilizada", f"{sum(b.volume for b in truck.layers[-1]['boxes'])/truck.volume:.1%}")
+                cols[1].metric("Espaço Residual", f"{truck.volume - sum(b.volume for b in boxes):.2f}m³")
+                cols[2].metric("Camadas Utilizadas", len(truck.layers))
+                cols[3].metric("Não Carregados", len(unloaded), delta_color="inverse")
+                
+                # Visualização 3D Interativa
+                st.subheader("Visualização Tridimensional")
+                fig = create_interactive_3d(truck)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Análise Detalhada
+                with st.expander("📊 Detalhamento da Carga"):
+                    loaded_df = pd.DataFrame([{
+                        'SKU': box.id,
+                        'Posição': f"{box.pos[0]:.2f}x{box.pos[1]:.2f}x{box.pos[2]:.2f}",
+                        'Dimensões': f"{box.dims[0]}x{box.dims[1]}x{box.dims[2]}",
+                        'Volume': box.volume,
+                        'Camada': idx+1
+                    } for idx, layer in enumerate(truck.layers) for box in layer['boxes']])
                     
-                    grouped = unplaced_stats.groupby("Produto").agg({
-                        "Quantidade": "sum",
-                        "Comprimento (m)": "mean",
-                        "Largura (m)": "mean",
-                        "Altura (m)": "mean"
-                    }).reset_index()
-                    
-                    st.error(f"**Atenção:** {len(unplaced)} volumes não puderam ser alocados!")
                     st.dataframe(
-                        grouped.style
-                        .format({
-                            "Comprimento (m)": "{:.2f}",
-                            "Largura (m)": "{:.2f}",
-                            "Altura (m)": "{:.2f}"
-                        })
-                        .set_properties(**{'background-color': '#fff0f0'}),
+                        loaded_df,
                         column_config={
-                            "Produto": st.column_config.TextColumn(width="medium"),
-                            "Quantidade": st.column_config.NumberColumn(
-                                "Qtd Não Alocada",
-                                help="Quantidade total deste produto não alocada"
-                            )
+                            'SKU': 'Produto',
+                            'Posição': st.column_config.TextColumn(width='medium'),
+                            'Dimensões': st.column_config.TextColumn('Medidas (m)'),
+                            'Volume': st.column_config.NumberColumn(format="%.2f m³")
                         },
-                        hide_index=True,
-                        height=300
+                        hide_index=True
                     )
-                else:
-                    st.success("**Sucesso:** Todos os volumes foram alocados adequadamente!")
                 
-                # Visualizações 3D
-                st.subheader("📐 Visualização Tridimensional")
-                tab1, tab2, tab3 = st.tabs(["Perspectiva 3D", "Visão Superior", "Visão Frontal"])
+                # Verificação de Integridade
+                with st.expander("🔍 Validação de Cálculos"):
+                    st.subheader("Verificação de Consistência")
+                    
+                    total_loaded = sum(b.volume for layer in truck.layers for b in layer['boxes'])
+                    overlaps = 0
+                    for i, box1 in enumerate(boxes):
+                        if not box1.pos:
+                            continue
+                        for box2 in boxes[i+1:]:
+                            if box2.pos and (
+                                box1.pos[0] < box2.pos[0]+box2.dims[0] and
+                                box1.pos[0]+box1.dims[0] > box2.pos[0] and
+                                box1.pos[1] < box2.pos[1]+box2.dims[1] and
+                                box1.pos[1]+box1.dims[1] > box2.pos[1] and
+                                box1.pos[2] < box2.pos[2]+box2.dims[2] and
+                                box1.pos[2]+box1.dims[2] > box2.pos[2]
+                            ):
+                                overlaps += 1
+                    
+                    check_cols = st.columns(3)
+                    check_cols[0].metric("Sobreposições Detectadas", overlaps, help="Número de caixas sobrepostas")
+                    check_cols[1].metric("Volume Total x Capacidade", 
+                                       f"{total_loaded:.2f}/{truck.volume:.2f}m³",
+                                       f"{(total_loaded/truck.volume)*100:.1f}%")
+                    check_cols[2].metric("Integridade Espacial", 
+                                       "✅ Válido" if overlaps == 0 else "❌ Inválido")
                 
-                with tab1:
-                    fig = create_3d_view(trailer, placed, 25, -45)
-                    st.pyplot(fig)
+                # Não Carregados
+                if unloaded:
+                    st.error(f"⚠️ {len(unloaded)} volumes não puderam ser carregados!")
+                    unloaded_summary = pd.DataFrame({
+                        'SKU': [b.id for b in unloaded],
+                        'Quantidade': [1]*len(unloaded),
+                        'Motivo': ['Altura insuficiente' if b.dims[2] > (height - 0.1) 
+                                  else 'Espaço inadequado' for b in unloaded]
+                    }).groupby(['SKU', 'Motivo']).count().reset_index()
+                    
+                    st.dataframe(
+                        unloaded_summary,
+                        column_config={
+                            'SKU': 'Produto',
+                            'Motivo': 'Causa',
+                            'Quantidade': 'Qtd'
+                        },
+                        hide_index=True
+                    )
                 
-                with tab2:
-                    fig = create_3d_view(trailer, placed, 90, -90)
-                    st.pyplot(fig)
-                
-                with tab3:
-                    fig = create_3d_view(trailer, placed, 0, 0)
-                    st.pyplot(fig)
-                
-                # Dados Faltantes
-                if not missing.empty:
-                    with st.expander("⚠️ Itens com Dados Incompletos"):
-                        st.warning("Os seguintes itens possuem dados incompletos ou inconsistentes:")
-                        st.dataframe(
-                            missing[["COD SKU", "QTDE", "QMM"]],
-                            column_config={
-                                "COD SKU": "SKU",
-                                "QTDE": "Quantidade Total",
-                                "QMM": "Quantidade por Pallet"
-                            }
-                        )
-                
-            except Exception as e:
-                st.error(f"Erro durante a simulação: {str(e)}")
+        except Exception as e:
+            st.error(f"Erro crítico: {str(e)}")
     else:
-        st.info("⤵️ Faça upload dos arquivos na barra lateral para iniciar a simulação")
+        st.info("⤵️ Carregue os arquivos necessários na barra lateral para iniciar")
 
 if __name__ == "__main__":
     main()
