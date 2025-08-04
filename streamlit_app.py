@@ -140,7 +140,7 @@ def add_box(ax, x, y, z, dx, dy, dz, color):
         Poly3DCollection(faces, facecolors=color, edgecolors="k", linewidths=0.3, alpha=0.85)
     )
 
-# =================== INTERFACE STREAMLIT ===================
+# =================== INTERFACE STREAMLIT CORRIGIDA ===================
 def main():
     st.set_page_config(
         page_title="Cubagem Inteligente 4.0",
@@ -149,7 +149,7 @@ def main():
         initial_sidebar_state="expanded"
     )
 
-    # Estilos CSS customizados
+    # Configuração visual customizada
     st.markdown("""
     <style>
     .metric-card {
@@ -158,147 +158,165 @@ def main():
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         background: #ffffff;
         margin-bottom: 25px;
-        transition: transform 0.2s;
+        transition: all 0.3s ease;
     }
     .metric-card:hover {
-        transform: translateY(-3px);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15);
     }
     .header-section {
-        background: linear-gradient(15deg, #2c3e50, #3498db);
-        padding: 25px;
+        background: linear-gradient(145deg, #2c3e50, #2980b9);
+        padding: 2rem;
         border-radius: 10px;
         color: white;
-        margin-bottom: 30px;
+        margin-bottom: 2.5rem;
+        text-align: center;
     }
     .stButton>button {
         width: 100%;
-        transition: all 0.3s;
+        padding: 12px !important;
+        border-radius: 8px !important;
+        transition: all 0.3s ease;
     }
     .stButton>button:hover {
-        transform: scale(1.05);
+        transform: scale(1.02);
     }
     </style>
     """, unsafe_allow_html=True)
 
-    # Header
+    # Interface principal
     st.markdown("""
     <div class="header-section">
-        <h1 style="margin:0;">📦 CUBAGEM INTELIGENTE - LOGPROD</h1>
-        <p style="margin:0; opacity:0.9;">Sistema de otimização de carregamento 3D em tempo real</p>
+        <h1 style="margin:0; font-size:2.5rem;">🚚 CUBAGEM INTELIGENTE</h1>
+        <p style="margin:0; font-size:1.1rem; opacity:0.95;">Otimização de cargas em tempo real com visualização 3D</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # Controles principais
-    with st.expander("⚙️ CONFIGURAÇÕES DO CARREGAMENTO", expanded=True):
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            st.subheader("📏 Dimensões da Carreta")
-            c = st.number_input("Comprimento (metros)", min_value=1.0, value=13.6, step=0.1)
-            l = st.number_input("Largura (metros)", min_value=1.0, value=2.45, step=0.1)
-            a = st.number_input("Altura (metros)", min_value=1.0, value=2.5, step=0.1)
+    # Configurações do carregamento
+    with st.expander("⚙️ CONFIGURAÇÕES DA CARGA", expanded=True):
+        col_dim, col_files = st.columns([1, 2])
+        
+        with col_dim:
+            st.subheader("📐 Dimensões do Veículo")
+            c = st.number_input("Comprimento Total (m)", 5.0, 30.0, 13.6, 0.1)
+            l = st.number_input("Largura Interna (m)", 1.5, 3.0, 2.45, 0.01)
+            a = st.number_input("Altura Máxima (m)", 1.5, 4.0, 2.5, 0.1)
             trailer = Trailer(c, l, a)
+        
+        with col_files:
+            st.subheader("📂 Arquivos de Entrada")
+            col_car, col_med = st.columns(2)
+            with col_car:
+                car_file = st.file_uploader("Planilha de Carregamento", type="xlsx")
+            with col_med:
+                med_file = st.file_uploader("Planilha de Medidas", type="xlsx")
 
-        with col2:
-            st.subheader("📂 Entrada de Dados")
-            col21, col22 = st.columns(2)
-            with col21:
-                car_file = st.file_uploader("Arquivo de Carregamento (XLSX)", type="xlsx")
-            with col22:
-                med_file = st.file_uploader("Arquivo de Medidas (XLSX)", type="xlsx")
-
-    # Processamento
-    if st.button("🚀 EXECUTAR SIMULAÇÃO", type="primary", use_container_width=True):
-        if not car_file or not med_file:
-            st.error("⚠️ Precisa selecionar ambos arquivos para prosseguir")
+    # Processamento principal
+    if st.button("🚀 INICIAR SIMULAÇÃO", type="primary", use_container_width=True):
+        if not (car_file and med_file):
+            st.error("⚠️ Selecione ambos os arquivos para continuar")
             return
 
         try:
-            with st.spinner("Processando dados e calculando cubagem..."):
+            with st.spinner("Analisando dados e calculando disposição 3D..."):
                 merged, missing = load_files(car_file, med_file)
                 sku_groups = expand_grouped(merged)
                 placed, left = pack_grouped(trailer, sku_groups)
-
-                # Cálculo das métricas
+                
                 vol_total = trailer.volume
                 vol_usado = sum(b.volume for b in placed)
-                percent_ocupacao = (vol_usado / vol_total) * 100
-                eficiencia = f"{percent_ocupacao:.1f}%"
-                status = ("✅ Carregamento Completo" if len(left) == 0 
-                        else f"⚠️ Parcial - {len(left)} volumes não alocados")
+                perc_ocup = (vol_usado / vol_total) * 100 if vol_total > 0 else 0
 
-                # Exibição das métricas
+                # Painel de métricas
+                st.subheader("📊 RESULTADOS DA SIMULAÇÃO")
                 cols = st.columns(4)
-                metrics = [
-                    ("📦 Volumes Alocados", f"{len(placed)}", "#4CAF50"),
-                    ("📭 Volumes Restantes", f"{len(left)}", "#FF5722"),
-                    ("📊 Cubagem Utilizada", f"{vol_usado:.1f}m³/{vol_total:.1f}m³", "#2196F3"),
-                    ("🎯 Eficiência", eficiencia, "#9C27B0"),
-                ]
-
-                for col, (title, value, color) in zip(cols, metrics):
-                    with col:
-                        st.markdown(f"""
-                        <div class="metric-card" style="border-left: 5px solid {color};">
-                            <div style="color: {color}; font-size: 24px; margin-bottom: 10px;">{value}</div>
-                            <div style="color: #666; font-size: 14px;">{title}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                with cols[0]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #27ae60;">
+                        <div style="font-size: 24px; color: #27ae60;">{len(placed)}</div>
+                        <div style="color: #666;">Volumes Carregados</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[1]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #e67e22;">
+                        <div style="font-size: 24px; color: #e67e22;">{len(left)}</div>
+                        <div style="color: #666;">Volumes não Alocados</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[2]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #2980b9;">
+                        <div style="font-size: 24px; color: #2980b9;">{perc_ocup:.1f}%</div>
+                        <div style="color: #666;">Taxa de Ocupação</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[3]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #9b59b6;">
+                        <div style="font-size: 24px; color: #9b59b6;">{vol_total:.1f}m³</div>
+                        <div style="color: #666;">Capacidade Total</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 # Visualização 3D
-                st.subheader("🗺️ Visualização Tridimensional do Carregamento")
-                plt.style.use('seaborn')
+                st.subheader("📦 DISPOSIÇÃO TRIDIMENSIONAL")
+                plt.rcParams.update({
+                    'figure.facecolor': 'white',
+                    'axes.grid': True,
+                    'grid.color': '#f0f0f0',
+                    'axes.edgecolor': '#333333',
+                    'axes.labelcolor': '#333333',
+                    'xtick.color': '#333333',
+                    'ytick.color': '#333333',
+                    'font.family': 'DejaVu Sans'
+                })
+                
                 fig = plt.figure(figsize=(12, 7))
                 ax = fig.add_subplot(111, projection='3d')
                 
-                # Configurações do gráfico
                 ax.set_xlim(0, trailer.c)
                 ax.set_ylim(0, trailer.l)
                 ax.set_zlim(0, trailer.a)
-                ax.set_xlabel("Comprimento (m)", fontsize=10)
-                ax.set_ylabel("Largura (m)", fontsize=10)
-                ax.set_zlabel("Altura (m)", fontsize=10)
-                ax.view_init(elev=22, azim=-60)
-                ax.set_title("Distribuição das Cargas na Carreta", pad=20)
-
-                # Cores únicas para cada SKU
-                skus = list(set(["-".join(b.id.split("-")[:-1]) for b in placed]))
-                cores = cm.tab20.colors[:len(skus)]
+                ax.set_xlabel("Comprimento (m)", fontsize=9, labelpad=10)
+                ax.set_ylabel("Largura (m)", fontsize=9, labelpad=10)
+                ax.set_zlabel("Altura (m)", fontsize=9, labelpad=10)
+                ax.view_init(elev=24, azim=-58)
                 
-                # Desenhar caixas
+                skus = list(set([b.id.split('-')[0] for b in placed]))
+                cores = cm.get_cmap('tab20', len(skus))(range(len(skus)))
+                
                 for b in placed:
-                    sku_idx = skus.index("-".join(b.id.split("-")[:-1]))
-                    add_box(ax, *b.pos, b.c, b.l, b.a, cores[sku_idx])
-
-                # Legenda
-                from matplotlib.patches import Rectangle
-                legend_elements = [Rectangle((0,0),1,1, color=cores[i], alpha=0.8, 
-                                   label=skus[i]) for i in range(len(skus))]
-                ax.legend(handles=legend_elements, bbox_to_anchor=(0.9, 0.9), 
-                        title="SKUs", fontsize=8)
+                    sku_id = b.id.split('-')[0]
+                    add_box(ax, *b.pos, b.c, b.l, b.a, cores[skus.index(sku_id)])
 
                 st.pyplot(fig)
 
-                # Relatório de problemas
+                # Seção de alertas
                 if len(left) > 0 or not missing.empty:
-                    st.subheader("🚨 Relatório de Inconsistências")
-                    tab1, tab2 = st.tabs(["Volumes Não Alocados", "SKUs sem Medidas"])
-
+                    st.subheader("⚠️ ITENS COM PROBLEMAS")
+                    tab1, tab2 = st.tabs(["Volumes Não Alocados", "SKUs Sem Medidas"])
+                    
                     with tab1:
-                        nao_alocados = pd.DataFrame({
-                            "SKU": [b.id.split("-")[0] for b in left],
-                            "Quantidade": [1]*len(left)
-                        }).groupby("SKU").count().reset_index()
-                        st.dataframe(nao_alocados, use_container_width=True, hide_index=True)
-
+                        df = pd.DataFrame({
+                            "SKU": [b.id.split('-')[0] for b in left],
+                            "Quantidade": len(left) * [1]
+                        }).groupby("SKU").sum().reset_index()
+                        st.dataframe(df, hide_index=True, use_container_width=True)
+                    
                     with tab2:
                         st.dataframe(missing[["COD SKU"]].drop_duplicates(), 
-                                   use_container_width=True, hide_index=True)
+                                   hide_index=True, use_container_width=True)
 
-                st.success(f"Simulação concluída: {status}")
+                st.success(f"Simulação concluída com sucesso! Ocupação: {perc_ocup:.1f}%")
 
         except Exception as e:
-            st.error(f"Erro crítico durante o processamento: {str(e)}")
-            st.error("Verifique os formatos dos arquivos e os dados de entrada")
+            st.error(f"ERRO: {str(e)}")
+            st.info("Verifique se os arquivos estão corretos e no formato adequado")
 
 if __name__ == "__main__":
     main()
+
