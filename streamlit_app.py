@@ -4,273 +4,318 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from typing import List, Tuple, Dict
-from itertools import permutations
+from matplotlib.colors import ListedColormap
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+# =================== CLASSES ORIGINAIS ===================
 class Box:
     def __init__(self, sku: str, c: float, l: float, a: float):
         self.id = sku
-        self.original_dim = (c, l, a)
-        self.pos: Tuple[float, float, float] = None
-        self.current_orientation = (c, l, a)
-        
-    def get_orientations(self, allowed_rotations: List[str]):
-        orientations = []
-        if 'height' in allowed_rotations:
-            orientations += list(permutations([self.original_dim[0], self.original_dim[1], self.original_dim[2]]))
-        if 'width' in allowed_rotations:
-            orientations += list(permutations([self.original_dim[1], self.original_dim[0], self.original_dim[2]]))
-        if 'length' in allowed_rotations:
-            orientations += list(permutations([self.original_dim[2], self.original_dim[1], self.original_dim[0]]))
-        return list(set(orientations))
+        self.c, self.l, self.a = c, l, a
+        self.pos: Tuple[float, float, float] | None = None
+
+    def orientations(self):
+        return [(self.c, self.l), (self.l, self.c)]
 
     @property
-    def dimensions(self):
-        return self.current_orientation
-    
-    @property
     def volume(self):
-        return math.prod(self.original_dim)
+        return self.c * self.l * self.a
 
 class Trailer:
     def __init__(self, c: float, l: float, a: float):
-        self.c = c
-        self.l = l
-        self.a = a
-        
+        self.c, self.l, self.a = c, l, a
+
     @property
     def volume(self):
         return self.c * self.l * self.a
 
 class SkylineLayer:
-    def __init__(self, width: float, depth: float):
-        self.width = width
-        self.depth = depth
-        self.skyline = [(0.0, 0.0, width)]
-        
-    def place_box(self, box_width: float, box_depth: float):
-        for i, (x, y, avail_width) in enumerate(self.skyline):
-            if box_width <= avail_width and (y + box_depth) <= self.depth:
-                self.skyline[i] = (x + box_width, y, avail_width - box_width)
-                self.skyline.append((x, y + box_depth, box_width))
-                return True, (x, y)
+    def __init__(self, C: float, L: float):
+        self.C, self.L = C, L
+        self.sky = [(0.0, 0.0, C)]
+
+    def place(self, b: Box):
+        for w, d in b.orientations():
+            for i, (x, y, fx) in enumerate(self.sky):
+                if w <= fx and y + d <= self.L:
+                    self.sky[i] = (x + w, y, fx - w)
+                    self.sky.append((x, y + d, w))
+                    return True, (x, y)
         return False, None
 
-def pack_boxes(trailer: Trailer, sku_groups: List[List[Box]], allowed_rotations: List[str]):
-    placed = []
-    unplaced = []
-    z_level = 0.0
-    current_layer_height = 0.0
-    
+# =================== FUNÇÕES DE CÁLCULO ===================
+def pack_grouped(trailer: Trailer, sku_groups: List[List[Box]]):
+    placed: List[Box] = []
+    unplaced: List[Box] = []
+    z = 0.0
     layer = SkylineLayer(trailer.c, trailer.l)
-    
-    for group_idx, group in enumerate(sku_groups):
-        group = sorted(group, key=lambda x: math.prod(x.original_dim), reverse=True)
-        
+    layer_h = 0.0
+
+    for g_idx, group in enumerate(sku_groups):
+        group.sort(key=lambda b: b.c * b.l, reverse=True)
         idx = 0
         while idx < len(group):
-            box = group[idx]
-            best_fit = None
-            best_orientation = None
-            
-            for orientation in box.get_orientations(allowed_rotations):
-                w, d, h = orientation
-                success, pos = layer.place_box(w, d)
-                
-                if success:
-                    total_height = z_level + max(current_layer_height, h)
-                    if total_height <= trailer.a:
-                        if best_fit is None or total_height < best_fit[2]:
-                            best_fit = (*pos, z_level)
-                            best_orientation = orientation
-            
-            if best_fit:
-                box.current_orientation = best_orientation
-                box.pos = best_fit
-                placed.append(box)
-                current_layer_height = max(current_layer_height, best_orientation[2])
+            b = group[idx]
+            ok, pos = layer.place(b)
+            if ok:
+                b.pos = (*pos, z)
+                placed.append(b)
+                layer_h = max(layer_h, b.a)
                 idx += 1
             else:
-                if current_layer_height == 0:
+                if layer_h == 0.0:
                     unplaced.extend(group[idx:])
-                    break
-                
-                z_level += current_layer_height
-                if z_level > trailer.a:
-                    unplaced.extend(group[idx:])
-                    for remaining in sku_groups[group_idx + 1:]:
-                        unplaced.extend(remaining)
-                    return placed, unplaced
-                
-                layer = SkylineLayer(trailer.c, trailer.l)
-                current_layer_height = 0.0
-                
+                    idx = len(group)
+                else:
+                    z += layer_h
+                    if z + 1e-6 > trailer.a:
+                        unplaced.extend(group[idx:])
+                        for rest in sku_groups[g_idx + 1:]:
+                            unplaced.extend(rest)
+                        return placed, unplaced
+                    layer = SkylineLayer(trailer.c, trailer.l)
+                    layer_h = 0.0
     return placed, unplaced
 
-def create_visualizations(trailer, boxes):
-    fig = plt.figure(figsize=(20, 15))
-    
-    # 3D Perspective
-    ax1 = fig.add_subplot(221, projection='3d')
-    ax1.set_title('Perspectiva 3D')
-    ax1.view_init(elev=25, azim=-60)
-    
-    # Top View
-    ax2 = fig.add_subplot(222, projection='3d')
-    ax2.set_title('Vista Superior')
-    ax2.view_init(elev=90, azim=-90)
-    
-    # Side View
-    ax3 = fig.add_subplot(223, projection='3d')
-    ax3.set_title('Vista Lateral')
-    ax3.view_init(elev=0, azim=-90)
-    
-    # Front View
-    ax4 = fig.add_subplot(224, projection='3d')
-    ax4.set_title('Vista Frontal')
-    ax4.view_init(elev=0, azim=0)
-    
-    axes = [ax1, ax2, ax3, ax4]
-    colors = cm.get_cmap('tab20', len(boxes))
-    
-    for ax in axes:
-        ax.set_box_aspect([trailer.c, trailer.l, trailer.a])
-        ax.set_xlim(0, trailer.c)
-        ax.set_ylim(0, trailer.l)
-        ax.set_zlim(0, trailer.a)
-        ax.set_xlabel('Comprimento (m)')
-        ax.set_ylabel('Largura (m)')
-        ax.set_zlabel('Altura (m)')
-        
-        for i, box in enumerate(boxes):
-            x, y, z = box.pos
-            w, d, h = box.dimensions
-            
-            faces = [
-                [[x, y, z], [x+w, y, z], [x+w, y+d, z], [x, y+d, z]],
-                [[x, y, z+h], [x+w, y, z+h], [x+w, y+d, z+h], [x, y+d, z+h]],
-                [[x, y, z], [x+w, y, z], [x+w, y, z+h], [x, y, z+h]],
-                [[x, y+d, z], [x+w, y+d, z], [x+w, y+d, z+h], [x, y+d, z+h]],
-                [[x, y, z], [x, y+d, z], [x, y+d, z+h], [x, y, z+h]],
-                [[x+w, y, z], [x+w, y+d, z], [x+w, y+d, z+h], [x+w, y, z+h]],
-            ]
-            
-            ax.add_collection3d(Poly3DCollection(faces, 
-                facecolors=colors(i % 20), 
-                edgecolors='k', 
-                linewidths=0.3,
-                alpha=0.8))
+def load_files(car_path, med_path):
+    car = pd.read_excel(car_path, engine="openpyxl")
+    med = pd.read_excel(med_path, engine="openpyxl")
 
-    plt.tight_layout()
-    return fig
-
-def main():
-    st.set_page_config(
-        page_title="Sistema de Cubagem 4.0",
-        layout="wide",
-        page_icon="📦"
-    )
+    med["KEY"] = med.apply(
+        lambda r: f"{str(r['COD FAMILIA'])}-{str(r['COD TAMANHO'])}-{int(r['QMM'])}", axis=1)
     
-    st.title("📦 Sistema Avançado de Cubagem 3D")
-    
-    with st.sidebar:
-        st.header("Configurações de Rotação")
-        rotations = st.multiselect(
-            'Eixos de Rotação Permitidos:',
-            ['Comprimento', 'Largura', 'Altura'],
-            ['Comprimento', 'Largura']
-        )
-        
-        st.header("Dimensões da Carreta")
-        length = st.number_input("Comprimento (m)", 5.0, 30.0, 13.6)
-        width = st.number_input("Largura (m)", 1.5, 3.0, 2.45)
-        height = st.number_input("Altura (m)", 1.5, 4.0, 2.5)
-        
-        st.header("Upload de Arquivos")
-        car_file = st.file_uploader("Arquivo de Carregamento", type="xlsx")
-        med_file = st.file_uploader("Arquivo de Medidas", type="xlsx")
-    
-    if st.button("Executar Simulação", type="primary"):
-        if not (car_file and med_file):
-            st.error("Selecione ambos os arquivos!")
-            return
-            
-        with st.spinner("Processando..."):
-            try:
-                # Carregar e processar dados
-                trailer = Trailer(length, width, height)
-                merged, missing = load_files(car_file, med_file)
-                sku_groups = expand_grouped(merged)
-                
-                # Empacotamento com rotações selecionadas
-                allowed_rot = [r.lower()[:3] for r in rotations]
-                placed, unplaced = pack_boxes(trailer, sku_groups, allowed_rot)
-                
-                # Métricas
-                used_vol = sum(b.volume for b in placed)
-                total_vol = trailer.volume
-                efficiency = (used_vol / total_vol) * 100 if total_vol > 0 else 0
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Volume Utilizado", f"{used_vol:.1f}m³")
-                col2.metric("Eficiência", f"{efficiency:.1f}%")
-                col3.metric("Volumes Não Alocados", len(unplaced))
-                
-                # Visualizações
-                st.subheader("Visualizações Multidimensionais")
-                fig = create_visualizations(trailer, placed)
-                st.pyplot(fig)
-                
-                # Dados problemáticos
-                if len(unplaced) > 0 or not missing.empty:
-                    with st.expander("Detalhes de Problemas", expanded=True):
-                        tab1, tab2 = st.tabs(["Não Alocados", "Sem Medidas"])
-                        with tab1:
-                            st.write(pd.DataFrame({
-                                "SKU": [b.id.split('-')[0] for b in unplaced],
-                                "Quantidade": len(unplaced) * [1]
-                            }).groupby("SKU").count())
-                        with tab2:
-                            st.write(missing[['COD SKU']].drop_duplicates())
-                
-            except Exception as e:
-                st.error(f"Erro: {str(e)}")
-
-def load_files(car_file, med_file):
-    car = pd.read_excel(car_file)
-    med = pd.read_excel(med_file)
-    
-    med['KEY'] = med.apply(
-        lambda r: f"{r['COD FAMILIA']}-{r['COD TAMANHO']}-{int(r['QMM'])}", axis=1)
-    
-    car['KEY'] = car.apply(
+    car["KEY"] = car.apply(
         lambda r: f"{r['COD SKU'].split('-')[0]}-{r['COD SKU'].split('-')[2]}-{r['QMM']}", axis=1)
-    
-    merged = car.merge(
-        med[['KEY', 'ALTURA', 'LARGURA', 'COMPRIMENTO']],
-        on='KEY',
-        how='left'
-    )
-    missing = merged[merged['ALTURA'].isna()]
-    return merged.dropna(), missing
 
-def expand_grouped(df):
-    groups = {}
-    for _, row in df.iterrows():
-        sku = row['COD SKU']
+    merged = car.merge(
+        med[["KEY", "ALTURA", "LARGURA", "COMPRIMENTO"]],
+        on="KEY",
+        how="left",
+    )
+    missing = merged[merged["ALTURA"].isna()]
+    merged = merged.dropna(subset=["ALTURA"])
+    return merged, missing
+
+def expand_grouped(df: pd.DataFrame) -> List[List[Box]]:
+    groups: Dict[str, List[Box]] = {}
+    order: List[str] = []
+    for _, r in df.iterrows():
+        sku = r["COD SKU"]
         if sku not in groups:
             groups[sku] = []
-        qmm = row['QMM']
-        if pd.notna(qmm) and qmm > 0:
-            qtd = math.ceil(row['QTDE'] / qmm)
-            for i in range(qtd):
-                groups[sku].append(Box(
-                    f"{sku}-{i+1}",
-                    row['COMPRIMENTO'],
-                    row['LARGURA'],
-                    row['ALTURA']
-                ))
-    return [v for v in groups.values()]
+            order.append(sku)
+        qmm = r["QMM"]
+        if qmm == 0 or math.isnan(qmm):
+            continue
+        n = math.ceil(r["QTDE"] / qmm)
+        for i in range(1, n + 1):
+            groups[sku].append(
+                Box(f"{sku}-{i}", r["COMPRIMENTO"], r["LARGURA"], r["ALTURA"])
+            )
+    return [groups[k] for k in order]
+
+# =================== FUNÇÕES DE VISUALIZAÇÃO ===================
+def cube_edges(x, y, z, dx, dy, dz):
+    p = [
+        (x, y, z), (x + dx, y, z), (x + dx, y + dy, z), (x, y + dy, z),
+        (x, y, z + dz), (x + dx, y, z + dz), (x + dx, y + dy, z + dz), (x, y + dy, z + dz)
+    ]
+    idx = [
+        (0, 1), (1, 2), (2, 3), (3, 0),
+        (4, 5), (5, 6), (6, 7), (7, 4),
+        (0, 4), (1, 5), (2, 6), (3, 7)
+    ]
+    return [(p[i], p[j]) for i, j in idx]
+
+def add_box(ax, x, y, z, dx, dy, dz, color):
+    faces = [
+        [(x, y, z), (x + dx, y, z), (x + dx, y + dy, z), (x, y + dy, z)],
+        [(x, y, z + dz), (x + dx, y, z + dz), (x + dx, y + dy, z + dz), (x, y + dy, z + dz)],
+        [(x, y, z), (x + dx, y, z), (x + dx, y, z + dz), (x, y, z + dz)],
+        [(x, y + dy, z), (x + dx, y + dy, z), (x + dx, y + dy, z + dz), (x, y + dy, z + dz)],
+        [(x, y, z), (x, y + dy, z), (x, y + dy, z + dz), (x, y, z + dz)],
+        [(x + dx, y, z), (x + dx, y + dy, z), (x + dx, y + dy, z + dz), (x + dx, y, z + dz)],
+    ]
+    ax.add_collection3d(
+        Poly3DCollection(faces, facecolors=color, edgecolors="k", linewidths=0.3, alpha=0.85)
+    )
+
+# =================== INTERFACE STREAMLIT CORRIGIDA ===================
+def main():
+    st.set_page_config(
+        page_title="Cubagem Inteligente 4.0",
+        page_icon="🚛",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # Configuração visual customizada
+    st.markdown("""
+    <style>
+    .metric-card {
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        background: #ffffff;
+        margin-bottom: 25px;
+        transition: all 0.3s ease;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+    }
+    .header-section {
+        background: linear-gradient(145deg, #2c3e50, #2980b9);
+        padding: 2rem;
+        border-radius: 10px;
+        color: white;
+        margin-bottom: 2.5rem;
+        text-align: center;
+    }
+    .stButton>button {
+        width: 100%;
+        padding: 12px !important;
+        border-radius: 8px !important;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        transform: scale(1.02);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Interface principal
+    st.markdown("""
+    <div class="header-section">
+        <h1 style="margin:0; font-size:2.5rem;">🚚 CUBAGEM INTELIGENTE</h1>
+        <p style="margin:0; font-size:1.1rem; opacity:0.95;">Otimização de cargas em tempo real com visualização 3D</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Configurações do carregamento
+    with st.expander("⚙️ CONFIGURAÇÕES DA CARGA", expanded=True):
+        col_dim, col_files = st.columns([1, 2])
+        
+        with col_dim:
+            st.subheader("📐 Dimensões do Veículo")
+            c = st.number_input("Comprimento Total (m)", 5.0, 30.0, 13.6, 0.1)
+            l = st.number_input("Largura Interna (m)", 1.5, 3.0, 2.45, 0.01)
+            a = st.number_input("Altura Máxima (m)", 1.5, 4.0, 2.5, 0.1)
+            trailer = Trailer(c, l, a)
+        
+        with col_files:
+            st.subheader("📂 Arquivos de Entrada")
+            col_car, col_med = st.columns(2)
+            with col_car:
+                car_file = st.file_uploader("Planilha de Carregamento", type="xlsx")
+            with col_med:
+                med_file = st.file_uploader("Planilha de Medidas", type="xlsx")
+
+    # Processamento principal
+    if st.button("🚀 INICIAR SIMULAÇÃO", type="primary", use_container_width=True):
+        if not (car_file and med_file):
+            st.error("⚠️ Selecione ambos os arquivos para continuar")
+            return
+
+        try:
+            with st.spinner("Analisando dados e calculando disposição 3D..."):
+                merged, missing = load_files(car_file, med_file)
+                sku_groups = expand_grouped(merged)
+                placed, left = pack_grouped(trailer, sku_groups)
+                
+                vol_total = trailer.volume
+                vol_usado = sum(b.volume for b in placed)
+                perc_ocup = (vol_usado / vol_total) * 100 if vol_total > 0 else 0
+
+                # Painel de métricas
+                st.subheader("📊 RESULTADOS DA SIMULAÇÃO")
+                cols = st.columns(4)
+                with cols[0]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #27ae60;">
+                        <div style="font-size: 24px; color: #27ae60;">{len(placed)}</div>
+                        <div style="color: #666;">Volumes Carregados</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[1]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #e67e22;">
+                        <div style="font-size: 24px; color: #e67e22;">{len(left)}</div>
+                        <div style="color: #666;">Volumes não Alocados</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[2]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #2980b9;">
+                        <div style="font-size: 24px; color: #2980b9;">{perc_ocup:.1f}%</div>
+                        <div style="color: #666;">Taxa de Ocupação</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[3]:
+                    st.markdown(f"""
+                    <div class="metric-card" style="border-left: 4px solid #9b59b6;">
+                        <div style="font-size: 24px; color: #9b59b6;">{vol_total:.1f}m³</div>
+                        <div style="color: #666;">Capacidade Total</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                # Visualização 3D
+                st.subheader("📦 DISPOSIÇÃO TRIDIMENSIONAL")
+                plt.rcParams.update({
+                    'figure.facecolor': 'white',
+                    'axes.grid': True,
+                    'grid.color': '#f0f0f0',
+                    'axes.edgecolor': '#333333',
+                    'axes.labelcolor': '#333333',
+                    'xtick.color': '#333333',
+                    'ytick.color': '#333333',
+                    'font.family': 'DejaVu Sans'
+                })
+                
+                fig = plt.figure(figsize=(12, 7))
+                ax = fig.add_subplot(111, projection='3d')
+                
+                ax.set_xlim(0, trailer.c)
+                ax.set_ylim(0, trailer.l)
+                ax.set_zlim(0, trailer.a)
+                ax.set_xlabel("Comprimento (m)", fontsize=9, labelpad=10)
+                ax.set_ylabel("Largura (m)", fontsize=9, labelpad=10)
+                ax.set_zlabel("Altura (m)", fontsize=9, labelpad=10)
+                ax.view_init(elev=24, azim=-58)
+                
+                skus = list(set([b.id.split('-')[0] for b in placed]))
+                cores = cm.get_cmap('tab20', len(skus))(range(len(skus)))
+                
+                for b in placed:
+                    sku_id = b.id.split('-')[0]
+                    add_box(ax, *b.pos, b.c, b.l, b.a, cores[skus.index(sku_id)])
+
+                st.pyplot(fig)
+
+                # Seção de alertas
+                if len(left) > 0 or not missing.empty:
+                    st.subheader("⚠️ ITENS COM PROBLEMAS")
+                    tab1, tab2 = st.tabs(["Volumes Não Alocados", "SKUs Sem Medidas"])
+                    
+                    with tab1:
+                        df = pd.DataFrame({
+                            "SKU": [b.id.split('-')[0] for b in left],
+                            "Quantidade": len(left) * [1]
+                        }).groupby("SKU").sum().reset_index()
+                        st.dataframe(df, hide_index=True, use_container_width=True)
+                    
+                    with tab2:
+                        st.dataframe(missing[["COD SKU"]].drop_duplicates(), 
+                                   hide_index=True, use_container_width=True)
+
+                st.success(f"Simulação concluída com sucesso! Ocupação: {perc_ocup:.1f}%")
+
+        except Exception as e:
+            st.error(f"ERRO: {str(e)}")
+            st.info("Verifique se os arquivos estão corretos e no formato adequado")
 
 if __name__ == "__main__":
     main()
